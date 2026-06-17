@@ -1,0 +1,15 @@
+.venv/
+out/
+_frames/
+__pycache__/
+.mypy_cache/
+*.pyc
+.DS_Store
+node_modules/
+browser/.vitest/
+browser/wasm/*.wasm
+browser/wasm/*.js
+browser/test/fixtures/*.NPK
+browser/public/*.NPK
+browser/dist/
+.claude/

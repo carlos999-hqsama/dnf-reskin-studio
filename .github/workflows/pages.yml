@@ -1,0 +1,45 @@
+# GitHub Pages 免费备份镜像 (主站仍是腾讯云 321fight.top)。
+# push 到 main 自动构建 browser/ 并部署到 Pages 子路径 /dnf-patch-studio/。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      # 子路径部署: vite base 设成 /<仓名>/, 资源 URL 带前缀; 运行时 wasm/图片走相对路径已两用。
+      - run: npm run build -- --base=/dnf-patch-studio/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: browser/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

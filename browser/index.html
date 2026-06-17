@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNF 职业补丁制作工具</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --ink2:#86868b; --ink3:#6e6e73;
+    --line:#e3e3e6; --line2:#d2d2d7; --blue:#0071e3; --blue2:#0077ed;
+    --ok:#1a8f4a; --okbg:#e8f6ed; --warn:#b06f00;
+    --shadow:0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;line-height:1.5}
+  .wrap{max-width:1560px;margin:0 auto;padding:40px 24px 32px}
+
+  .topbar{display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+  .topbar h1{font-size:26px;font-weight:600;letter-spacing:-.02em;margin:0;flex:none}
+  .topbar .grow{flex:1}
+
+  .panels{display:flex;gap:16px;align-items:flex-start}
+  .panel{flex:1;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:18px 20px;box-shadow:var(--shadow)}
+  .panel-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .panel-head h2{font-size:16px;font-weight:600;margin:0}
+  .panel-tag{font-size:12px;font-weight:600;padding:2px 9px;border-radius:980px;background:var(--bg);color:var(--ink3)}
+  .panel-sub{color:var(--ink3);font-size:12.5px;margin:0 0 12px}
+  .panel-main{display:flex;gap:16px}
+  .bggrid-col{flex:1;min-width:0}
+  .side{flex:none;width:200px;display:flex;flex-direction:column;gap:10px}
+
+  .bggrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  .cell{border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;
+    align-items:center;justify-content:center;aspect-ratio:1;line-height:0}
+  .cell canvas{max-width:100%;max-height:100%;image-rendering:pixelated}
+  .cell.empty{color:var(--ink2);font-size:12px;line-height:1.4;text-align:center;padding:6px}
+  .dropzone{border:2px dashed var(--line2);border-radius:12px;transition:.15s ease}
+  .dropzone.over{border-color:var(--blue);background:#f0f7ff}
+
+  .preview{border:1px solid var(--line);border-radius:10px;background:#8a8d93;
+    aspect-ratio:1;display:flex;align-items:center;justify-content:center;line-height:0}
+  .preview canvas{width:100%;height:100%;object-fit:contain;image-rendering:pixelated}
+  .preview-lbl{font-size:11.5px;color:var(--ink3);margin:0 0 -4px;text-align:center}
+
+  .bg-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .bg-row .lbl{font-size:12px;color:var(--ink3);width:100%}
+  .bg-sw{width:24px;height:24px;border-radius:7px;border:2px solid var(--line2);padding:0;cursor:pointer;transition:.12s ease}
+  .bg-sw:hover{transform:scale(1.1)}
+  .bg-sw.active{border-color:var(--blue);box-shadow:0 0 0 3px #f0f7ff}
+
+  .gridsegs{margin-top:14px}
+  .gridsegs .lbl{display:block;margin-bottom:6px}
+  .seg-nav{display:flex;flex-wrap:wrap;gap:5px}
+  .seg{min-width:30px;padding:5px 8px;border-radius:7px;background:var(--bg);border:1.5px solid transparent;
+    color:var(--ink);cursor:pointer;font:inherit;font-size:12px;font-weight:500}
+  .seg:hover{border-color:var(--line2)}
+  .seg.active{border-color:var(--blue);color:var(--blue)}
+  .seg.done{background:var(--okbg);color:var(--ok)}
+  .seg.active.done{border-color:var(--ok)}
+
+  .lbl{font-size:12px;color:var(--ink3)}
+  .sel{font:inherit;font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--line2);
+    background:var(--card);color:var(--ink);width:100%;cursor:pointer}
+
+  .tabs{display:flex;gap:6px}
+  .tab{flex:1;padding:7px 0;border-radius:8px;background:var(--bg);border:1.5px solid transparent;
+    color:var(--ink);cursor:pointer;font:inherit;font-size:13px;font-weight:500;text-align:center;transition:.12s ease}
+  .tab:hover{border-color:var(--line2)}
+  .tab.active{border-color:var(--blue);color:var(--blue);background:#f0f7ff}
+  .objpick{display:flex;flex-direction:column;gap:6px}
+  .objlist{display:flex;flex-direction:column;gap:2px;max-height:300px;overflow:auto;
+    border:1px solid var(--line);border-radius:8px;padding:5px;background:var(--card)}
+  .objrow{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:6px 8px;border-radius:6px;
+    background:none;border:1.5px solid transparent;cursor:pointer;font:inherit;text-align:left;width:100%}
+  .objrow:hover{background:var(--bg)}
+  .objrow.active{border-color:var(--blue);background:#f0f7ff}
+  .objzh{font-size:13px;color:var(--ink);font-weight:500;line-height:1.3}
+  .objlabel{font-size:11px;color:var(--ink2);line-height:1.2}
+  .seg.act{min-width:auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .algo{display:flex;flex-direction:column;gap:7px;border:1px solid var(--line);border-radius:10px;padding:9px 10px}
+  .algo .chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink)}
+  .chkrow{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink);cursor:pointer}
+  .foottip{color:var(--ink3);font-size:13px;text-align:center;margin:0 0 18px}
+  .foottip b{color:var(--ink);font-weight:600}
+
+  .btn{font:inherit;font-size:13px;font-weight:500;padding:9px 14px;border-radius:980px;
+    border:1px solid var(--line2);background:var(--card);color:var(--ink);cursor:pointer;
+    transition:.15s ease;white-space:nowrap;text-align:center}
+  .btn:hover{background:var(--bg)}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+  .btn.primary:hover{background:var(--blue2)}
+  .btn.block{display:block;width:100%}
+  .btn.ghost{border-radius:8px;font-weight:400}
+  label.btn{display:block}label.btn input{display:none}
+
+  .pill{font-size:13px;color:var(--ink3);background:var(--bg);border-radius:980px;padding:6px 14px}
+  .pill.ok{color:var(--ok);background:var(--okbg)}
+
+  .modal{position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;
+    background:rgba(20,20,22,.62);padding:20px;cursor:zoom-out;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+  .modal.on{display:flex}
+  .modal img{max-width:95vw;max-height:88vh;border-radius:14px;box-shadow:0 16px 60px rgba(0,0,0,.4);background:#fff}
+  .modal-hint{position:fixed;left:0;right:0;bottom:16px;text-align:center;color:rgba(255,255,255,.9);
+    font-size:13px;pointer-events:none}
+
+  .pg{display:none}
+  .pg.on{display:block}
+  .pg-track{height:6px;border-radius:3px;background:var(--bg);overflow:hidden}
+  .pg-fill{height:100%;width:30%;background:var(--blue);border-radius:3px;transition:width .2s ease}
+  .pg-fill.indet{width:40%;animation:slide 1.1s ease-in-out infinite}
+  @keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}
+  .pg-label{font-size:11.5px;color:var(--ink3);margin-top:4px}
+
+  .okbar{background:var(--okbg);color:var(--ok);border-radius:10px;padding:11px 13px;
+    font-size:12.5px;font-weight:500;line-height:1.5}
+  .failbar{background:#fff0f0;color:#d70015;border-radius:10px;padding:11px 13px;font-size:12.5px;font-weight:500}
+  .hint{color:var(--ink3);font-size:12.5px;margin:0;line-height:1.5}
+  .muted{color:var(--ink3);font-size:13px}
+
+  .foot{max-width:1180px;margin:0 auto;padding:8px 24px 60px}
+  .foot summary{cursor:pointer;color:var(--ink2);font-size:13px;list-style:none}
+  .foot summary::-webkit-details-marker{display:none}
+  .foot-body{margin-top:14px;padding:18px;background:var(--card);border:1px solid var(--line);border-radius:12px}
+  .foot-body input[type=file]{font:inherit;font-size:13px;margin-left:8px}
+  #out{margin-top:12px}
+  #out img{width:64px;border:1px solid var(--line);border-radius:6px;margin:3px;
+    image-rendering:pixelated;vertical-align:top;background:#fafafa}
+
+  .panels{overflow-x:auto}
+  @media(max-width:560px){.panels{flex-direction:column}.panel{width:100%}}
+</style>
+</head><body>
+
+<div class="wrap">
+  <header class="topbar">
+    <h1>DNF 职业补丁制作工具</h1>
+    <div class="grow"></div>
+    <button class="btn ghost" id="guideBtn">使用教程</button>
+    <button class="btn primary" id="wbPick">选择 DNF 目录</button>
+    <span class="pill" id="wbDir" hidden></span>
+  </header>
+
+  <div class="panels">
+    <section class="panel" id="panelL">
+      <p class="muted" style="padding:8px 0">先选 DNF 的 <code>ImagePacks2</code> 目录（需 Chrome / Edge）。</p>
+    </section>
+    <section class="panel" id="panelR" hidden></section>
+  </div>
+</div>
+
+<footer class="foot">
+  <p class="foottip">Tips：AI 重绘推荐用 <b>nano banana</b>（Gemini 图像模型），出图最稳。</p>
+  <details>
+    <summary>开发自检</summary>
+    <div class="foot-body">
+      <button class="btn ghost" id="btn">解包 test.NPK</button>
+      <button class="btn ghost" id="btnAlign">core 对齐渲染</button>
+      <button class="btn ghost" id="btnReskin">补丁闭环演示</button>
+      <input type="file" id="file" accept=".NPK,.npk">
+      <div id="out"></div>
+    </div>
+  </details>
+</footer>
+
+<div class="modal" id="guideModal" role="dialog" aria-label="使用教程">
+  <img src="tutorial.png" alt="DNF 职业补丁使用流程">
+  <div class="modal-hint">点击任意位置关闭</div>
+</div>
+
+<script>
+  (function () {
+    var modal = document.getElementById('guideModal');
+    function open() { modal.classList.add('on'); }
+    function close() { modal.classList.remove('on'); }
+    document.getElementById('guideBtn').addEventListener('click', open);
+    modal.addEventListener('click', close);                                   // 点任意位置关闭
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+    if (!localStorage.getItem('dnf-guide-seen')) { open(); localStorage.setItem('dnf-guide-seen', '1'); } // 首次访问自动弹一次
+  })();
+</script>
+
+<script type="module" src="/src/main.ts"></script>
+</body></html>
