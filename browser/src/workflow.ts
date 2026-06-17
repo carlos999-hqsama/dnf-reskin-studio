@@ -8,9 +8,9 @@ import type { AsyncEngine, DnfManifest } from './engine';
 import { decodePng, encodePng } from './png';
 import { buildActionGridCanvas } from './render-canvas';
 import { importActionGrid, type ImportMeta, type ImportedFrame } from './import';
-import { conformToDnf } from './pixels';
-import { SpriteSet, type Cell, type Action } from './model';
-import { computeContentGeometry, type Geometry } from './geometry';
+import { conformToDnf, getBbox } from './pixels';
+import { SpriteSet, type Cell, type Action, type RGBA } from './model';
+import { MARGIN, type Geometry } from './geometry';
 import { segmentAction } from './segment';
 import {
   CLASS_ZH, skinFileName, hideAvatarNames, type SkinEntry,
@@ -24,10 +24,18 @@ import { type FsaDirHandle } from './fs-access';
 export interface GridSpec { cols: number; rows: number; segSize: number; }
 export const DEFAULT_GRID: GridSpec = { cols: 4, rows: 4, segSize: 16 };
 // nano banana(Gemini Flash Image)图生图甜区: 输入按 768 切片、出图 1K-2K, 太小细节不足。
-// 内容贴合 cell≈142×146, ×3 → 每格~430px、3×3 网格≈1.3-1.4Kpx (PNG, 近 1:1; 编辑模式保留输入画布原样改)。
-export const EXPORT_UPSCALE = 3;   // NEAREST 放大倍数 (整数→像素均匀锐利)
-export const EXPORT_GAP = 16;      // 帧间隙: 配内容贴合的格内 margin, 让 AI 看清格界 + 投影切分稳
+export const EXPORT_TARGET_CHAR = 240; // 导出图里角色目标高度 px (反推全动作统一放大倍数, 太小 AI 画不出细节)
+export const EXPORT_UPSCALE_MAX = 3;   // 放大倍数上限 (整数 NEAREST → 像素锐利, 防超大网格)
+export const EXPORT_GAP = 16;      // 帧间隙: 让 AI 看清格界 + 投影切分稳
 export const EXPORT_PAD = 16;      // 网格四周边距
+
+/** 全动作统一放大倍数 (NEAREST 整数): 按角色基准高 targetH 反推, 使角色 ≈ EXPORT_TARGET_CHAR px。
+ *  关键: 用【全动作统一】的 targetH (非各组), 故所有组放大倍数一致 → 角色跨组同大小 (不"变大变小"),
+ *  而几何格本身各组紧贴本组姿势 (segmentUnionGeo) → 角色又大。clamp [1, EXPORT_UPSCALE_MAX]。 */
+export function exportUpscale(targetH: number): number {
+  const u = Math.round(EXPORT_TARGET_CHAR / Math.max(1, targetH));
+  return Math.min(EXPORT_UPSCALE_MAX, Math.max(1, u));
+}
 
 // ── 列角色 / 列隐藏源 (文件系统遍历 + DNF 规则过滤的组合) ───────────────────────
 // % 开头 = 我们自己写的补丁, 不当源 (parseSkin/isHideSource 也拒它, 这里显式再保险一层)。
@@ -99,10 +107,11 @@ export interface SubjectAction {
   isEffect: boolean;     // 特效层 (黑底+加色) → 抠图应留黑 (v1 仍走普通抠图, UI 标注提醒)
   cells: Cell[];         // 该 IMG 的真实帧 [imgIndex, frame_index]
   segments: Cell[][];    // 4×4 网格分组
-  geo: Geometry;
-  targetH: number;
+  targetH: number;       // 角色基准高 (全动作中位内容高); 导入归一 + 算导出放大倍数, 全动作统一 → 跨组同大小
   baseDX: number;
   baseDY: number;
+  // 注: 导出/预览几何不在这里 — 每组(分段)在 renderActionSegment 按本组内容 bbox 现算 (segmentUnionGeo),
+  // 紧贴本组姿势 → 角色大; 放大倍数走全动作统一 targetH → 跨组同大小。
 }
 
 export interface OpenSubject {
@@ -115,6 +124,7 @@ export interface OpenSubject {
   metaSS: SpriteSet;                     // 所有动作的 size/axis (算几何/渲染查元数据)
   fileByCell: Map<string, string>;       // "g,i" → file (全动作, 从 manifest 建)
   pngByFile: Map<string, Uint8Array>;    // file → PNG; 按动作懒填
+  imgDataByCell: Map<string, ImageData>; // "g,i" → 解码像素; ensureActionGeo 填, 渲染/切组复用不重解
   loadedImgs: Set<number>;               // 已解像素的 IMG (懒解去重)
   replaced: Map<string, ImportedFrame>;  // "g,i" → 替换帧 (跨动作累积; g=img_index 故不撞)
   gridCols: number; gridRows: number;    // 当前导出网格(3 或 4); 渲染导出图 + 显示网格列数用, setGrid 切换时更新
@@ -132,15 +142,14 @@ function collectImg(manifest: DnfManifest, imgIndex: number, ss: SpriteSet, file
   return cells;
 }
 
-/** 一个 IMG 的 cells → SubjectAction (几何/分组/targetH/家锚, 全从 size/axis 算)。与 openChar 同一套公式。 */
+/** 一个 IMG 的 cells → SubjectAction (分组/targetH/家锚, 从 size/axis 算; 几何各组渲染时现算)。 */
 function buildAction(metaSS: SpriteSet, cells: Cell[], imgIndex: number, name: string, isEffect: boolean, segSize: number): SubjectAction {
   const action: Action = { id: imgIndex, name, frames: cells.map(([g, i]) => [g, i, 0, 0, 6] as const) };
   const segments = segmentAction(action, segSize, false).map((s) => s.keys); // 不并尾组 → 每组 ≤segSize 不爆 4×4
-  const geo = computeContentGeometry(metaSS, cells, 300);
   const targetH = cells.length ? mid(cells.map(([g, i]) => metaSS.get(g, i)!.size[1])) || 64 : 64;
   const baseDX = mid(cells.map(([g, i]) => { const f = metaSS.get(g, i)!; return f.axis[0] - f.size[0] / 2; }));
   const baseDY = mid(cells.map(([g, i]) => { const f = metaSS.get(g, i)!; return f.axis[1] - f.size[1]; }));
-  return { imgIndex, name, isEffect, cells, segments, geo, targetH, baseDX, baseDY };
+  return { imgIndex, name, isEffect, cells, segments, targetH, baseDX, baseDY };
 }
 
 /** IMG 路径末段名 (sprite/.../00_stand.img → 00_stand)。动作展示用。 */
@@ -164,7 +173,7 @@ export async function openSubject(eng: AsyncEngine, srcNpk: Uint8Array, fileName
   }
   return {
     type, fileName, zh: subjectZh(fileName, type), srcNpk, manifest, actions,
-    metaSS, fileByCell, pngByFile: new Map(), loadedImgs: new Set(), replaced: new Map(),
+    metaSS, fileByCell, pngByFile: new Map(), imgDataByCell: new Map(), loadedImgs: new Set(), replaced: new Map(),
     gridCols: grid.cols, gridRows: grid.rows,
   };
 }
@@ -186,7 +195,50 @@ export async function ensureActionPixels(eng: AsyncEngine, open: OpenSubject, im
   open.loadedImgs.add(imgIndex);
 }
 
-/** 渲染某动作的某组 → 导出网格 canvas + meta (注入该动作的 targetH/家锚)。懒解该动作像素。 */
+/** 解码某组的帧像素 (只解这一组; 已缓存则取 imgDataByCell) → SpriteSet。切组复用缓存不重解。 */
+async function decodeSegment(open: OpenSubject, cells: Cell[]): Promise<SpriteSet> {
+  const ss = new SpriteSet();
+  for (const [g, i] of cells) {
+    const key = `${g},${i}`;
+    let img = open.imgDataByCell.get(key);
+    if (!img) {
+      const file = open.fileByCell.get(key);
+      const png = file ? open.pngByFile.get(file) : undefined;
+      if (!png) continue;
+      img = await decodePng(png);
+      open.imgDataByCell.set(key, img);
+    }
+    const m = open.metaSS.get(g, i);
+    if (!m) continue;
+    ss.set({ group: g, image: i, size: m.size, axis: m.axis, img });
+  }
+  return ss;
+}
+
+/** 按【本组真实内容 bbox 的轴相对并集】算这一组的轴锚定几何 (scale=1 原生; 放大交给 exportUpscale)。
+ *  关键: DNF 的 axis(offset, 游戏世界注册点)常远离精灵本体, 若按"轴±最大外延"当格会圈进大片空白 →
+ *  角色挤小。改取本组各帧内容 bbox 在【轴相对坐标】下的带符号 min/max 并集 (轴可落格外) → 格子紧贴本组
+ *  姿势真实占用区 → 角色大; 各帧仍按 axis 摆放 → 跳跃帧在上、站立帧在下, 组内连贯 (还原游戏动画)。
+ *  每组各算 (紧贴本组), 但放大倍数走全动作统一 targetH → 角色跨组同大小 (不"变大变小")。 */
+function segmentUnionGeo(ss: SpriteSet, cells: Cell[]): Geometry {
+  let L = Infinity, T = Infinity, R = -Infinity, B = -Infinity;
+  for (const [g, i] of cells) {
+    const fr = ss.get(g, i);
+    if (!fr?.img) continue;
+    const bb = getBbox(fr.img as RGBA); // [x0,y0,x1,y1] x1/y1 exclusive; 全透明帧 null
+    if (!bb) continue;
+    const [ax, ay] = fr.axis;
+    L = Math.min(L, bb[0] - ax); R = Math.max(R, bb[2] - ax);
+    T = Math.min(T, bb[1] - ay); B = Math.max(B, bb[3] - ay);
+  }
+  if (!Number.isFinite(L)) return { cellW: 1, cellH: 1, anchor: [0, 0], scale: 1 };
+  return {
+    cellW: Math.max(1, R - L + 2 * MARGIN), cellH: Math.max(1, B - T + 2 * MARGIN),
+    anchor: [-L + MARGIN, -T + MARGIN], scale: 1, // 轴在格内落点 (可超出格)
+  };
+}
+
+/** 渲染某动作的某组 → 导出网格 canvas + meta (注入该动作的 targetH/家锚)。懒解该组像素 + 现算本组几何。 */
 export async function renderActionSegment(
   eng: AsyncEngine, open: OpenSubject, actionIndex: number, segIndex: number, bg?: string,
 ): Promise<{ canvas: HTMLCanvasElement; meta: ImportMeta; geo: Geometry; cells: Cell[]; ss: SpriteSet }> {
@@ -194,17 +246,12 @@ export async function renderActionSegment(
   if (!action) throw new Error(`动作越界: ${actionIndex}`);
   await ensureActionPixels(eng, open, action.imgIndex);
   const cells = action.segments[segIndex] ?? [];
-  const ss = new SpriteSet();
-  for (const [g, i] of cells) {
-    const file = open.fileByCell.get(`${g},${i}`);
-    const png = file ? open.pngByFile.get(file) : undefined;
-    const m = open.metaSS.get(g, i);
-    if (!png || !m) continue;
-    ss.set({ group: g, image: i, size: m.size, axis: m.axis, img: await decodePng(png) });
-  }
-  const { canvas, meta } = buildActionGridCanvas(ss, cells, action.geo, { upscale: EXPORT_UPSCALE, gap: EXPORT_GAP, pad: EXPORT_PAD, bg, cols: open.gridCols, rows: open.gridRows });
+  const ss = await decodeSegment(open, cells);
+  const geo = segmentUnionGeo(ss, cells);               // 本组紧贴几何 (角色大 + 组内连贯)
+  const upscale = exportUpscale(action.targetH);        // 全动作统一放大 → 角色跨组同大小
+  const { canvas, meta } = buildActionGridCanvas(ss, cells, geo, { upscale, gap: EXPORT_GAP, pad: EXPORT_PAD, bg, cols: open.gridCols, rows: open.gridRows });
   meta.targetH = action.targetH; meta.baseDX = action.baseDX; meta.baseDY = action.baseDY;
-  return { canvas, meta, geo: action.geo, cells, ss };
+  return { canvas, meta, geo, cells, ss };
 }
 
 /** 导入某组 AI 图 → 去背对齐 → 累积进 open.replaced (键 "img,frame" 跨动作不撞)。返回导入帧数。 */

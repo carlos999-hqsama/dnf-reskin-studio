@@ -3,7 +3,7 @@
 // 统一缩到角色基准高 targetH(保宽高比) + 轴=内容底部中心。算法件全已单测; 只 resize 走 Canvas
 // (与 PIL LANCZOS 不逐字节, 靠 preview 真浏览器验对齐) → 做成依赖注入, node 可注 nearest 测串接。
 import type { RGBA, XY } from './model';
-import { keyOut, floodKey, floodBg, despillGreen } from './matte';
+import { keyOut, floodKey, floodBg, despillGreen, defringeGreen } from './matte';
 import { getBbox, crop, columnAlphaProfile, rowAlphaProfile } from './pixels';
 import { splitBounds } from './align';
 
@@ -102,7 +102,8 @@ export function importActionGrid(
   // 显式 despill 优先; 否则按 bgKey 是否绿系自动判 (不传 bgKey = 默认绿幕流程 → 削)。
   const isGreen = (k: readonly [number, number, number]): boolean => k[1] > k[0] && k[1] > k[2];
   const despill = opts.despill ?? (opts.bgKey ? isGreen(opts.bgKey) : true);
-  const dsp = (im: RGBA): RGBA => (despill ? despillGreen(im) : im);
+  // 绿底流程: 先 defringe 抹掉绿污染 AA 暗边, 再 despill 中和残绿 (顺序不能反 — 反了暗边已成形)。
+  const dsp = (im: RGBA): RGBA => (despill ? despillGreen(defringeGreen(im)) : im);
 
   let work = cloneRGBA(img);
   if (opts.bgKey) work = keyOut(work, opts.bgKey, keyTol);

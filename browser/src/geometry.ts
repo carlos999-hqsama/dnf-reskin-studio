@@ -47,28 +47,6 @@ export function computeGeometry(
   return { cellW: cw, cellH: ch, anchor, scale };
 }
 
-/** 内容贴合几何 — cell = 各帧【自身尺寸】的最大值 (不含脚底锚远点撑出的运动并集)，让单帧内容
- *  填满格子、不再被"举武器/跳跃"的极端帧把所有格子撑大。脚底锚点改成 per-cell (渲染时按内容
- *  居中位置 + 该帧 axis 算，可落格外)，故这里 anchor 只给占位 [0,0] (导出/预览各自用 per-cell)。
- *  用于导出网格 (buildActionGridCanvas) 与左右栏单帧缩略；动画预览仍用 computeGeometry (运动并集
- *  保帧间位置连贯，否则逐帧重心居中会抖)。 */
-export function computeContentGeometry(
-  frames: SpriteSet,
-  cells: Iterable<Cell>,
-  maxcell = 300,
-  margin = MARGIN,
-): Geometry {
-  let mw = 1, mh = 1;
-  for (const [g, i] of cells) {
-    const fr = frames.get(g, i);
-    if (!fr) continue;
-    mw = Math.max(mw, fr.size[0]);
-    mh = Math.max(mh, fr.size[1]);
-  }
-  let cw = mw + 2 * margin, ch = mh + 2 * margin;
-  let scale = 1.0;
-  if (Math.max(cw, ch) > maxcell) scale = maxcell / Math.max(cw, ch);
-  cw = Math.trunc(cw * scale);
-  ch = Math.trunc(ch * scale);
-  return { cellW: cw, cellH: ch, anchor: [0, 0], scale };
-}
+// 注: 旧的 computeContentGeometry (内容居中贴合几何) 已弃用删除 —— 它丢了游戏注册锚点, 对跳跃/倒地等
+// 动作帧会各自居中乱飘 (导出乱)。导出/预览改用 workflow.segmentUnionGeo (按内容 bbox 的轴相对并集,
+// 见 workflow.ts): 既紧贴本组姿势 (角色大), 又按 axis 摆放保帧间连贯。

@@ -2,7 +2,7 @@
 // 目的: 证明 core 的精密对齐逻辑 TS 重写与 Python 版逐项等价 (无回归)。
 import { describe, it, expect } from 'vitest';
 import { SpriteSet, uniqueCells, type Frame, type Action } from '../src/model';
-import { computeGeometry, computeContentGeometry } from '../src/geometry';
+import { computeGeometry } from '../src/geometry';
 import { footAnchorAxis, splitBounds } from '../src/align';
 import { segmentAction } from '../src/segment';
 
@@ -25,31 +25,6 @@ describe('Geometry (对应 TestGeometry)', () => {
     const geo = computeGeometry(ss, [[0, 0]], 300, 8);
     expect(geo.scale).toBeLessThan(1.0);
     expect(Math.max(geo.cellW, geo.cellH)).toBeLessThanOrEqual(300);
-  });
-});
-
-describe('computeContentGeometry (内容贴合: cell=最大帧内容, 不被脚底锚远点撑大)', () => {
-  it('cell = 最大帧 w/h + 2*margin', () => {
-    // 帧A 20×40, 帧B 30×20 → 各维取 max = 30×40 → cell (30+16)×(40+16)
-    const ss = new SpriteSet([solidFrame(0, 0, 20, 40, [10, 30]), solidFrame(0, 1, 30, 20, [5, 10])]);
-    const geo = computeContentGeometry(ss, [[0, 0], [0, 1]], 1000, 8);
-    expect([geo.cellW, geo.cellH]).toEqual([46, 56]);
-    expect(geo.scale).toBe(1.0);
-  });
-  it('超 maxcell 按比例缩', () => {
-    const ss = new SpriteSet([solidFrame(0, 0, 400, 400, [0, 0])]);
-    const geo = computeContentGeometry(ss, [[0, 0]], 300, 8);
-    expect(geo.scale).toBeLessThan(1.0);
-    expect(Math.max(geo.cellW, geo.cellH)).toBeLessThanOrEqual(300);
-  });
-  it('脚底锚远离内容时 cell 远小于 computeGeometry 的运动并集 (修空白)', () => {
-    // 帧 30×40 轴(200,300) 远在内容外 → computeGeometry 外延被锚撑爆; 内容贴合仍贴帧 30×40
-    const ss = new SpriteSet([solidFrame(0, 0, 30, 40, [200, 300])]);
-    const content = computeContentGeometry(ss, [[0, 0]], 1000, 8);
-    const union = computeGeometry(ss, [[0, 0]], 1000, 8);
-    expect([content.cellW, content.cellH]).toEqual([46, 56]);
-    expect(content.cellW).toBeLessThan(union.cellW);
-    expect(content.cellH).toBeLessThan(union.cellH);
   });
 });
 

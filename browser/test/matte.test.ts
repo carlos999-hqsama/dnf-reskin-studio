@@ -1,7 +1,7 @@
 // 去背契约测试 — 验 matte.ts 与 Python core/matte.py 行为一致 (合成 RGBA, 不依赖真 Canvas)。
 import { describe, it, expect } from 'vitest';
 import type { RGBA } from '../src/model';
-import { floodBg, keyOut, despillGreen, floodKey } from '../src/matte';
+import { floodBg, keyOut, despillGreen, floodKey, defringeGreen } from '../src/matte';
 
 function rgba(w: number, h: number, fill: [number, number, number, number]): RGBA {
   const data = new Uint8ClampedArray(w * h * 4);
@@ -55,6 +55,26 @@ describe('despillGreen (去绿溢出)', () => {
     const img = rgba(1, 1, [200, 50, 50, 255]);
     despillGreen(img);
     expect([img.data[0], img.data[1], img.data[2]]).toEqual([200, 50, 50]);
+  });
+});
+
+describe('defringeGreen (削绿污染 AA 暗边)', () => {
+  it('贴透明的绿为主像素被抹透明, 角色本色边留', () => {
+    // 4x3 全透明, 中行画: [透明, 绿污染, 红(角色), 红]; defringe 需 h≥2 (与 floodKey 同守卫)
+    const img = rgba(4, 3, [0, 0, 0, 0]);
+    setPx(img, 1, 1, [60, 180, 60, 255]);  // 绿为主 + 左邻透明 → 应删
+    setPx(img, 2, 1, [200, 40, 40, 255]);  // 红(角色本色, g 不占优) → 留
+    setPx(img, 3, 1, [200, 40, 40, 255]);  // 红 → 留
+    defringeGreen(img, 1);                  // 只削 1 圈
+    expect(aAt(img, 1, 1)).toBe(0);   // 绿污染边删
+    expect(aAt(img, 2, 1)).toBe(255); // 红边留(g 不占优)
+    expect(aAt(img, 3, 1)).toBe(255); // 红留
+  });
+  it('绿色角色(全绿无透明邻)整体不误删', () => {
+    const img = rgba(3, 3, [0, 200, 0, 255]); // 全绿不透明, 无透明邻
+    defringeGreen(img, 2);
+    expect(aAt(img, 1, 1)).toBe(255); // 中心留
+    expect(aAt(img, 0, 0)).toBe(255); // 角也留(无透明邻)
   });
 });
 

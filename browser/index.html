@@ -40,8 +40,9 @@
   .dropzone.over{border-color:var(--blue);background:#f0f7ff}
 
   .preview{border:1px solid var(--line);border-radius:10px;background:#8a8d93;
-    aspect-ratio:1;display:flex;align-items:center;justify-content:center;line-height:0}
-  .preview canvas{width:100%;height:100%;object-fit:contain;image-rendering:pixelated}
+    aspect-ratio:1;position:relative;overflow:hidden;line-height:0}
+  /* canvas 绝对定位脱离布局 → 预览框恒为 aspect-ratio:1 方框, 不被各组 geo 的画布固有尺寸撑变 (切组不跳高) */
+  .preview canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;image-rendering:pixelated}
   .preview-lbl{font-size:11.5px;color:var(--ink3);margin:0 0 -4px;text-align:center}
 
   .bg-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}

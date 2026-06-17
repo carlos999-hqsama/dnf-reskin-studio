@@ -32,7 +32,7 @@ describe('openSubject (多动作元数据)', () => {
     expect(open.actions[0]!.cells.length).toBe(2);
     expect(open.actions[1]!.name).toBe('01_attack');
     expect(open.actions[0]!.segments.length).toBeGreaterThanOrEqual(1);
-    expect(open.actions[0]!.geo).toBeTruthy();
+    expect(open.actions[0]!.targetH).toBeGreaterThan(0); // 几何各组渲染时现算; 这里只验动作级 targetH
   });
 
   it('宠物 falcon 单 IMG → 单 action', async () => {

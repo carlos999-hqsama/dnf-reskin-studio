@@ -5,7 +5,7 @@
 // 全走 workflow.openSubject 统一编排 (职业=单本体动作, 怪物/宠物=多独立动作)。数据流在 workflow(无 DOM),
 // 这里只管 DOM / 事件 / 动画预览 / 进度条。真实目录走 showDirectoryPicker(需用户手势, 限 Chrome 系)。
 import type { AsyncEngine, HideImg } from './engine';
-import { renderCellContentFit } from './render-canvas';
+import { renderCellCanvas } from './render-canvas';
 import type { ImportMeta } from './import';
 import { SpriteSet, type Cell, type RGBA } from './model';
 import type { Geometry } from './geometry';
@@ -56,8 +56,8 @@ function toImageData(img: RGBA): ImageData {
 // 后台/隐藏标签页 rAF 会被浏览器暂停 → await 永久挂起 → 整个流程卡死 (preview 隐藏标签页实测中招)。
 const raf = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-/** 在 canvas 上循环播放一组帧 (内容贴合: 水平居中+底部对齐 → 角色填满且脚踩同底线, 与导出图一致) = 循环预览。
- *  返回 setInterval id, 调用方负责 clearInterval (切组/重渲时停)。DNF 帧时序在 .ani(不读) → 固定节拍。
+/** 在 canvas 上循环播放一组帧 (轴锚定: 每帧 axis 钉同锚 + 统一 scale → 角色按游戏注册点原地动、与导出图一致)
+ *  = 循环预览。返回 setInterval id, 调用方负责 clearInterval (切组/重渲时停)。DNF 帧时序在 .ani(不读) → 固定节拍。
  *  canvas 内部分辨率 = geo cell; 显示尺寸交给 CSS (.preview aspect-ratio:1 方框 + canvas object-fit:contain
  *  按比例 letterbox 填入), 不在 JS 设 inline 宽高 — 否则会被 .preview 的 max 约束各自裁剪致角色变形。 */
 function animateStrip(canvas: HTMLCanvasElement, ss: SpriteSet, cells: Cell[], geo: Geometry, bg: string): number {
@@ -72,7 +72,7 @@ function animateStrip(canvas: HTMLCanvasElement, ss: SpriteSet, cells: Cell[], g
     if (!present.length) return;
     const cell = present[idx % present.length]!;
     const fr = ss.get(cell[0], cell[1])!;
-    ctx.drawImage(renderCellContentFit(fr.img as ImageData, geo), 0, 0);
+    ctx.drawImage(renderCellCanvas(fr.img as ImageData, fr.axis, geo), 0, 0);
     idx++;
   };
   tick();
@@ -171,6 +171,8 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
   let animTimers: number[] = [];
 
   const segKey = (): string => `${curAction}:${curSeg}`;
+  // 当前动作"满组"帧数 (最大分段长度): 末组帧少时, 网格按它补空格 → 各组同高、切组不跳。
+  const fullSegLen = (): number => (open?.actions[curAction]?.segments ?? []).reduce((m, s) => Math.max(m, s.length), 0);
 
   // 持久进度条: 插在两栏上方, 不随面板 renderBoth 重建而消失。
   const headPg = makePg();
@@ -180,12 +182,15 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
     if (!open) return;
     const key = segKey();
     if (cur && curForKey === key) return;             // 缓存命中(换幕布/算法不重渲) → 不弹进度, 免闪
-    pgShow(headPg, '渲染中…'); await raf();
+    // 仅当首次解该动作像素(走 Worker, 慢)才弹进度条; 同动作切组像素已缓存→渲染快→不弹, 免进度条占位推挤布局(切组跳动主因之一)。
+    const action = open.actions[curAction];
+    const slow = !action || !open.loadedImgs.has(action.imgIndex);
+    if (slow) { pgShow(headPg, '渲染中…'); await raf(); }
     const eng = await getEngine();
     const r = await renderActionSegment(eng, open, curAction, curSeg, EXPORT_BG); // 懒解该动作像素
     cur = { meta: r.meta, geo: r.geo, cells: r.cells, ss: r.ss, exportCanvas: r.canvas };
     curForKey = key;
-    pgHide(headPg);
+    if (slow) pgHide(headPg);
   }
 
   // ── 重抠当前组 (导入新图 / 改算法 / 改 despill / 改补刀色 时调) ──────────────────
@@ -334,8 +339,9 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
       grid.style.gridTemplateColumns = `repeat(${open.gridCols}, 1fr)`; // 显示列数随导出网格 (3 或 4)
       for (const [gr, im] of cur.cells) {
         const fr = cur.ss.get(gr, im);
-        grid.appendChild(gridCell(fr?.img ? renderCellContentFit(fr.img as ImageData, cur.geo) : null, leftBg.css));
+        grid.appendChild(gridCell(fr?.img ? renderCellCanvas(fr.img as ImageData, fr.axis, cur.geo) : null, leftBg.css));
       }
+      for (let k = cur.cells.length; k < fullSegLen(); k++) grid.appendChild(gridCell(null, leftBg.css)); // 末组帧少→补空格, 行数恒定不塌(切组不跳)
       gridCol.appendChild(grid);
       const gs = el('div', 'gridsegs');                    // 序列帧分组挪到网格下方 (左右布局协调)
       gs.appendChild(el('span', 'lbl', '序列帧分组'));
@@ -411,8 +417,9 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
       grid.style.gridTemplateColumns = `repeat(${o.gridCols}, 1fr)`; // 显示列数随导出网格 (3 或 4)
       for (const [gr, im] of g.cells) {
         const fr = o.replaced.get(`${gr},${im}`);
-        grid.appendChild(gridCell(fr ? renderCellContentFit(toImageData(fr.img), g.geo) : null, rightBg.css, '拖重绘图到这'));
+        grid.appendChild(gridCell(fr ? renderCellCanvas(toImageData(fr.img), fr.axis, g.geo) : null, rightBg.css, '拖重绘图到这'));
       }
+      for (let k = g.cells.length; k < fullSegLen(); k++) grid.appendChild(gridCell(null, rightBg.css)); // 末组补空格, 与左栏同高不跳
       const fileIn = el('input'); fileIn.type = 'file'; fileIn.accept = 'image/png,image/*'; fileIn.style.display = 'none';
       fileIn.addEventListener('change', () => { const f = fileIn.files?.[0]; if (f) void onImportFile(f); });
       grid.addEventListener('click', () => fileIn.click());
@@ -485,11 +492,13 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
   async function renderBoth(): Promise<void> {
     animTimers.forEach((t) => clearInterval(t)); animTimers = [];
     if (open) await ensureCur();
+    const sy = window.scrollY; // 整栏 replaceWith 后还原滚动位 → 切组/换算法不把页面弹走
     els.panelL.replaceWith(Object.assign(buildLeft(), { id: 'panelL' }));
     els.panelL = document.getElementById('panelL')!;
     els.panelR.hidden = false;
     els.panelR.replaceWith(Object.assign(buildRight(), { id: 'panelR' }));
     els.panelR = document.getElementById('panelR')!;
+    if (window.scrollY !== sy) window.scrollTo({ top: sy });
   }
 
   // ── 类型切换 / 对象选择 ──────────────────────────────────────────────────────────

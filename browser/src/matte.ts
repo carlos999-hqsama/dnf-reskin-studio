@@ -52,6 +52,32 @@ export function keyOut(img: RGBA, key: readonly [number, number, number], tol: n
   return img;
 }
 
+/** 削绿幕 AA 残边: 抠主色(floodKey)后, 角色轮廓仍残留一圈"绿×角色"混色的半透明边 — 它离纯绿太远没被
+ *  floodKey 吃掉, 又会被 despill 把绿通道压低 → 变成【暗橄榄色脏边】(就是肉眼看到的"抠图不干净")。
+ *  这里把"绿为主色 (g>r && g>b) 且四邻有透明像素 (= 在轮廓边)"的像素直接抹透明, 不留暗边。
+ *  iters 控削几圈 (AA 边常 1-2px, 默认 2)。⚠️ 只在【绿底】流程用 (绿色角色身上同色会被误削, 故与 despill
+ *  同开关)。原地改 alpha; 一轮一轮削 (削掉外圈后内圈变新边)。 */
+export function defringeGreen(img: RGBA, iters = 2): RGBA {
+  const { data, width: w, height: h } = img;
+  if (w < 2 || h < 2) return img;
+  for (let it = 0; it < iters; it++) {
+    const kill: number[] = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        if (!data[i + 3]) continue;
+        if (!(data[i + 1]! > data[i]! && data[i + 1]! > data[i + 2]!)) continue; // 非绿为主 → 留 (角色本色)
+        const edge = (x > 0 && !data[i - 4 + 3]) || (x < w - 1 && !data[i + 4 + 3]) ||
+                     (y > 0 && !data[i - w * 4 + 3]) || (y < h - 1 && !data[i + w * 4 + 3]);
+        if (edge) kill.push(i);
+      }
+    }
+    if (!kill.length) break;
+    for (const i of kill) data[i + 3] = 0;
+  }
+  return img;
+}
+
 /** 去绿幕溢出: 不透明像素若 green 明显高于 red/blue, 把 green 压到 max(r,b) → 中和边缘残绿。
  *  对应 matte.despill_green (Python int() 截断 → Math.trunc)。 */
 export function despillGreen(img: RGBA, amount = 1.0): RGBA {
