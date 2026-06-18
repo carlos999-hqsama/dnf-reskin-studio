@@ -25,6 +25,30 @@ export function renderCellCanvas(img: ImageData, axis: readonly [number, number]
   return cell;
 }
 
+/** 一帧 → cellW×cellH canvas: 【参考图式对齐】(AI 重绘友好)。横向把帧 axis_x 钉到 geo.anchor[0]
+ *  (角色注册位, 不左右飘); 纵向把【内容底】对齐到 geo.anchor[1] 基线(脚踩同一线, 不随姿势上下飘)。
+ *  为何纵向不用 axis_y: DNF 的 axis(offset)是世界坐标偏移、常远离精灵本体, axis_y 不在脚底, 用它纵向定位
+ *  会让脚随姿势乱飘(尤其跳跃/腾空帧)。故纵向改用真实内容底 → 每帧角色同一脚底线、同一水平位, 只姿势变。 */
+export function renderCellGrounded(img: ImageData, axis: readonly [number, number], geo: Geometry): HTMLCanvasElement {
+  const cell = document.createElement('canvas');
+  cell.width = geo.cellW;
+  cell.height = geo.cellH;
+  const ctx = cell.getContext('2d')!;
+  const tmp = document.createElement('canvas');
+  tmp.width = img.width;
+  tmp.height = img.height;
+  tmp.getContext('2d')!.putImageData(img, 0, 0);
+  const s = geo.scale;
+  const dw = Math.max(1, Math.round(img.width * s)), dh = Math.max(1, Math.round(img.height * s));
+  const bb = getBbox({ data: img.data, width: img.width, height: img.height }); // 内容底对齐基线
+  const contentBottom = bb ? bb[3] : img.height;
+  const dx = Math.round(geo.anchor[0] - axis[0] * s);       // axis_x → anchor_x (横向注册, 不飘)
+  const dy = Math.round(geo.anchor[1] - contentBottom * s); // 内容底 → 基线 anchor_y (纵向接地)
+  ctx.imageSmoothingEnabled = s !== 1;
+  ctx.drawImage(tmp, 0, 0, img.width, img.height, dx, dy, dw, dh);
+  return cell;
+}
+
 /** 去重帧 → 横图 canvas (绿底 + 脚底锚线)。所有帧的轴钉同锚 → 脚底应贴齐红线。
  *  对应 render.build_strip 的合成部分 (布局走 core, 这里画像素)。 */
 export function buildStripCanvas(frames: SpriteSet, cells: Cell[], geo: Geometry): HTMLCanvasElement {
@@ -53,8 +77,8 @@ export interface GridExport {
 }
 
 /** 去重帧 → 接近正方形网格 canvas + meta (对应 render.build_action_grid; nano banana 友好导出)。
- *  每帧【轴锚定】放入格 (renderCellCanvas: 帧 axis(脚底/游戏注册点) 钉同一 geo.anchor + 全动作统一 scale
- *  → 跳跃帧在空中、倒地帧在地面, 整组还原连贯动画, 不再每帧各自居中乱飘) → NEAREST 放大 upscale 倍保锐边
+ *  每帧【参考图式对齐】放入格 (renderCellGrounded: 横向 axis_x 钉同锚不左右飘 + 纵向内容底对齐统一基线
+ *  脚踩同线不上下飘 → 每帧角色同位同脚线、只姿势变, AI 重绘最稳) → NEAREST 放大 upscale 倍保锐边
  *  → 贴格; meta 记 cols/rows + 每格内容 bbox (仅导入 targetH 缺省时的回退参考)。
  *  导入 importActionGrid 按 cols/rows 投影切回, 新内容统一缩到 meta.targetH + 内容底部中心锚
  *  (见 import.ts; 与原版逐帧/头身比脱钩, 不左右闪)。布局走 computeGridLayout。 */
@@ -74,7 +98,7 @@ export function buildActionGridCanvas(
   const metaCells: ImportCell[] = [];
   present.forEach(([g, i], idx) => {
     const fr = frames.get(g, i)!;
-    const small = renderCellCanvas(fr.img as ImageData, fr.axis, geo); // 轴锚定 (脚底钉同锚 + 统一 scale)
+    const small = renderCellGrounded(fr.img as ImageData, fr.axis, geo); // 参考图式: 横向 axis_x + 纵向内容底基线
     const big = document.createElement('canvas');
     big.width = layout.cw;
     big.height = layout.ch;

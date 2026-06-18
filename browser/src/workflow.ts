@@ -251,27 +251,25 @@ async function decodeSegment(open: OpenSubject, cells: Cell[]): Promise<SpriteSe
   return ss;
 }
 
-/** 按【本组真实内容 bbox 的轴相对并集】算这一组的轴锚定几何 (scale=1 原生; 放大交给 exportUpscale)。
- *  关键: DNF 的 axis(offset, 游戏世界注册点)常远离精灵本体, 若按"轴±最大外延"当格会圈进大片空白 →
- *  角色挤小。改取本组各帧内容 bbox 在【轴相对坐标】下的带符号 min/max 并集 (轴可落格外) → 格子紧贴本组
- *  姿势真实占用区 → 角色大; 各帧仍按 axis 摆放 → 跳跃帧在上、站立帧在下, 组内连贯 (还原游戏动画)。
- *  每组各算 (紧贴本组), 但放大倍数走全动作统一 targetH → 角色跨组同大小 (不"变大变小")。 */
-function segmentUnionGeo(ss: SpriteSet, cells: Cell[]): Geometry {
-  let L = Infinity, T = Infinity, R = -Infinity, B = -Infinity;
+/** 按本组真实内容算【参考图式对齐】几何 (scale=1 原生; 放大交给 exportUpscale)。
+ *  横向: 取内容 bbox 在【轴相对坐标】的带符号并集 (L/R) → 格子紧贴、axis_x 钉 anchor[0] (角色注册位不左右飘)。
+ *  纵向: 不按 axis_y (DNF 的 axis 常远离精灵本体、不在脚底, 按它会让脚随姿势乱飘) → 取最大内容高, 各帧内容底
+ *  统一对齐到基线 anchor[1]=cellH-margin (脚踩同线、不上下飘)。配 renderCellGrounded 用。
+ *  每组各算 (紧贴本组), 放大倍数走全动作统一 targetH → 角色跨组同大小。 */
+export function groundedGeo(ss: SpriteSet, cells: Cell[]): Geometry {
+  let L = Infinity, R = -Infinity, maxH = 1;
   for (const [g, i] of cells) {
     const fr = ss.get(g, i);
     if (!fr?.img) continue;
     const bb = getBbox(fr.img as RGBA); // [x0,y0,x1,y1] x1/y1 exclusive; 全透明帧 null
     if (!bb) continue;
-    const [ax, ay] = fr.axis;
-    L = Math.min(L, bb[0] - ax); R = Math.max(R, bb[2] - ax);
-    T = Math.min(T, bb[1] - ay); B = Math.max(B, bb[3] - ay);
+    const [ax] = fr.axis;
+    L = Math.min(L, bb[0] - ax); R = Math.max(R, bb[2] - ax); // 横向: 轴相对
+    maxH = Math.max(maxH, bb[3] - bb[1]);                     // 纵向: 内容高
   }
   if (!Number.isFinite(L)) return { cellW: 1, cellH: 1, anchor: [0, 0], scale: 1 };
-  return {
-    cellW: Math.max(1, R - L + 2 * MARGIN), cellH: Math.max(1, B - T + 2 * MARGIN),
-    anchor: [-L + MARGIN, -T + MARGIN], scale: 1, // 轴在格内落点 (可超出格)
-  };
+  const cellW = Math.max(1, R - L + 2 * MARGIN), cellH = Math.max(1, maxH + 2 * MARGIN);
+  return { cellW, cellH, anchor: [-L + MARGIN, cellH - MARGIN], scale: 1 }; // anchor=[axis_x落点, 底基线]
 }
 
 /** 渲染某动作的某组 → 导出网格 canvas + meta (注入该动作的 targetH/家锚)。懒解该组像素 + 现算本组几何。 */
@@ -284,7 +282,7 @@ export async function renderActionSegment(
   await ensureActionContentStats(open, action);         // 按真实内容算 targetH/家锚 (覆盖帧图尺寸临时值)
   const cells = action.segments[segIndex] ?? [];
   const ss = await decodeSegment(open, cells);
-  const geo = segmentUnionGeo(ss, cells);               // 本组紧贴几何 (角色大 + 组内连贯)
+  const geo = groundedGeo(ss, cells);                   // 参考图式: 横向 axis_x 注册 + 纵向内容底统一基线
   const upscale = exportUpscale(action.targetH);        // 全动作统一放大 → 角色跨组同大小
   const { canvas, meta } = buildActionGridCanvas(ss, cells, geo, { upscale, gap: EXPORT_GAP, pad: EXPORT_PAD, bg, cols: open.gridCols, rows: open.gridRows });
   meta.targetH = action.targetH; meta.baseDX = action.baseDX; meta.baseDY = action.baseDY;

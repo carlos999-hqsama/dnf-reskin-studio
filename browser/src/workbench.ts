@@ -5,12 +5,12 @@
 // 全走 workflow.openSubject 统一编排 (职业=单本体动作, 怪物/宠物=多独立动作)。数据流在 workflow(无 DOM),
 // 这里只管 DOM / 事件 / 动画预览 / 进度条。真实目录走 showDirectoryPicker(需用户手势, 限 Chrome 系)。
 import type { AsyncEngine, HideImg } from './engine';
-import { renderCellCanvas } from './render-canvas';
+import { renderCellGrounded } from './render-canvas';
 import type { ImportMeta } from './import';
 import { SpriteSet, type Cell, type RGBA } from './model';
 import type { Geometry } from './geometry';
 import {
-  openSubject, setGrid, renderActionSegment, importActionSegment, deploySubject,
+  openSubject, setGrid, renderActionSegment, importActionSegment, deploySubject, groundedGeo,
   listSkins, listHideSources, filterSubjects, type OpenSubject, type SubjectEntry, type GridSpec,
 } from './workflow';
 import { parseSkin, hidePatchName, type SubjectType } from './dnf-rules';
@@ -72,7 +72,7 @@ function animateStrip(canvas: HTMLCanvasElement, ss: SpriteSet, cells: Cell[], g
     if (!present.length) return;
     const cell = present[idx % present.length]!;
     const fr = ss.get(cell[0], cell[1])!;
-    ctx.drawImage(renderCellCanvas(fr.img as ImageData, fr.axis, geo), 0, 0);
+    ctx.drawImage(renderCellGrounded(fr.img as ImageData, fr.axis, geo), 0, 0);
     idx++;
   };
   tick();
@@ -339,7 +339,7 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
       grid.style.gridTemplateColumns = `repeat(${open.gridCols}, 1fr)`; // 显示列数随导出网格 (3 或 4)
       for (const [gr, im] of cur.cells) {
         const fr = cur.ss.get(gr, im);
-        grid.appendChild(gridCell(fr?.img ? renderCellCanvas(fr.img as ImageData, fr.axis, cur.geo) : null, leftBg.css));
+        grid.appendChild(gridCell(fr?.img ? renderCellGrounded(fr.img as ImageData, fr.axis, cur.geo) : null, leftBg.css));
       }
       for (let k = cur.cells.length; k < fullSegLen(); k++) grid.appendChild(gridCell(null, leftBg.css)); // 末组帧少→补空格, 行数恒定不塌(切组不跳)
       gridCol.appendChild(grid);
@@ -413,11 +413,18 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
     const gridCol = el('div', 'bggrid-col');
     if (open && cur) {
       const o = open, g = cur;
+      // 成品帧自己的 grounded 几何 (成品 axis=内容底中心, 与原版 axis 不同坐标系, 必须各算各的)。
+      const repSS = new SpriteSet();
+      for (const [gr, im] of g.cells) {
+        const fr = o.replaced.get(`${gr},${im}`);
+        if (fr) repSS.set({ group: gr, image: im, size: [fr.img.width, fr.img.height], axis: fr.axis, img: toImageData(fr.img) });
+      }
+      const rgeo = groundedGeo(repSS, g.cells);
       const grid = el('div', 'bggrid dropzone');
       grid.style.gridTemplateColumns = `repeat(${o.gridCols}, 1fr)`; // 显示列数随导出网格 (3 或 4)
       for (const [gr, im] of g.cells) {
-        const fr = o.replaced.get(`${gr},${im}`);
-        grid.appendChild(gridCell(fr ? renderCellCanvas(toImageData(fr.img), fr.axis, g.geo) : null, rightBg.css, '拖重绘图到这'));
+        const fr = repSS.get(gr, im);
+        grid.appendChild(gridCell(fr?.img ? renderCellGrounded(fr.img as ImageData, fr.axis, rgeo) : null, rightBg.css, '拖重绘图到这'));
       }
       for (let k = g.cells.length; k < fullSegLen(); k++) grid.appendChild(gridCell(null, rightBg.css)); // 末组补空格, 与左栏同高不跳
       const fileIn = el('input'); fileIn.type = 'file'; fileIn.accept = 'image/png,image/*'; fileIn.style.display = 'none';
@@ -449,7 +456,8 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
         const fr = o.replaced.get(`${gr},${im}`);
         if (fr) repSS.set({ group: gr, image: im, size: [fr.img.width, fr.img.height], axis: fr.axis, img: toImageData(fr.img) });
       }
-      animTimers.push(animateStrip(pc, repSS, g.cells, g.geo, rightBg.css)); prev.appendChild(pc);
+      const rgeo = groundedGeo(repSS, g.cells); // 成品帧自己的几何 (axis 坐标系与原版不同)
+      animTimers.push(animateStrip(pc, repSS, g.cells, rgeo, rightBg.css)); prev.appendChild(pc);
       side.appendChild(prev);
       side.appendChild(swatchRow(() => rightBg, (b) => { rightBg = b; }));
 
