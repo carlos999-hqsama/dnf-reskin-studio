@@ -107,9 +107,10 @@ export interface SubjectAction {
   isEffect: boolean;     // 特效层 (黑底+加色) → 抠图应留黑 (v1 仍走普通抠图, UI 标注提醒)
   cells: Cell[];         // 该 IMG 的真实帧 [imgIndex, frame_index]
   segments: Cell[][];    // 4×4 网格分组
-  targetH: number;       // 角色基准高 (全动作中位内容高); 导入归一 + 算导出放大倍数, 全动作统一 → 跨组同大小
-  baseDX: number;
-  baseDY: number;
+  targetH: number;       // 角色基准高; 导入归一 + 算导出放大倍数, 全动作统一 → 跨组同大小。openSubject 先按帧图高给临时值, 首次渲染 ensureActionContentStats 用真实内容高覆盖
+  baseDX: number;        // 轴相对内容【水平中心】偏移 (非帧图中心)
+  baseDY: number;        // 轴相对内容【底边】偏移 (非帧图底)
+  statsReady?: boolean;  // targetH/baseDX/baseDY 是否已按内容 bbox 算定 (ensureActionContentStats 一次性)
   // 注: 导出/预览几何不在这里 — 每组(分段)在 renderActionSegment 按本组内容 bbox 现算 (segmentUnionGeo),
   // 紧贴本组姿势 → 角色大; 放大倍数走全动作统一 targetH → 跨组同大小。
 }
@@ -142,7 +143,9 @@ function collectImg(manifest: DnfManifest, imgIndex: number, ss: SpriteSet, file
   return cells;
 }
 
-/** 一个 IMG 的 cells → SubjectAction (分组/targetH/家锚, 从 size/axis 算; 几何各组渲染时现算)。 */
+/** 一个 IMG 的 cells → SubjectAction (分组 + targetH/家锚临时值)。targetH/baseDX/baseDY 这里先按【帧图尺寸】
+ *  算个临时值(不解像素, 开包秒回); 首次渲染时 ensureActionContentStats 用【真实内容 bbox】覆盖 —— 因 DNF
+ *  帧图常带透明边, 按帧图算会让导入基准高虚高 → 补丁角色比原版放大、与按内容算的导出几何对不上。 */
 function buildAction(metaSS: SpriteSet, cells: Cell[], imgIndex: number, name: string, isEffect: boolean, segSize: number): SubjectAction {
   const action: Action = { id: imgIndex, name, frames: cells.map(([g, i]) => [g, i, 0, 0, 6] as const) };
   const segments = segmentAction(action, segSize, false).map((s) => s.keys); // 不并尾组 → 每组 ≤segSize 不爆 4×4
@@ -195,6 +198,39 @@ export async function ensureActionPixels(eng: AsyncEngine, open: OpenSubject, im
   open.loadedImgs.add(imgIndex);
 }
 
+/** 按【真实内容 bbox】算该动作的 targetH/baseDX/baseDY (覆盖 buildAction 的帧图尺寸临时值)。
+ *  关键: DNF 帧图常带透明边, 按帧图尺寸算基准高会虚高 → 导入把补丁角色缩到虚高 → 比原版放大、且与按内容算的
+ *  导出/预览几何对不上。改用内容高 + 轴相对内容(中心/底)算 → 补丁角色 = 原版真实大小, 三处(导出/预览/入游戏)一致。
+ *  需全部帧像素 (ensureActionPixels 已备 PNG), 顺带解码缓存进 imgDataByCell。一次性算 + statsReady 缓存。 */
+export async function ensureActionContentStats(open: OpenSubject, action: SubjectAction): Promise<void> {
+  if (action.statsReady) return;
+  const hs: number[] = [], dxs: number[] = [], dys: number[] = [];
+  for (const [g, i] of action.cells) {
+    const key = `${g},${i}`;
+    let img = open.imgDataByCell.get(key);
+    if (!img) {
+      const file = open.fileByCell.get(key);
+      const png = file ? open.pngByFile.get(file) : undefined;
+      if (!png) continue;
+      img = await decodePng(png);
+      open.imgDataByCell.set(key, img);
+    }
+    const m = open.metaSS.get(g, i);
+    const bb = getBbox(img as RGBA); // [x0,y0,x1,y1] x1/y1 exclusive; 全透明帧 null
+    if (!m || !bb) continue;
+    const [ax, ay] = m.axis;
+    hs.push(bb[3] - bb[1]);                 // 内容高 (剔透明边)
+    dxs.push(ax - (bb[0] + bb[2]) / 2);     // 轴 - 内容水平中心
+    dys.push(ay - bb[3]);                   // 轴 - 内容底边
+  }
+  if (hs.length) {
+    action.targetH = mid(hs) || action.targetH;
+    action.baseDX = mid(dxs);
+    action.baseDY = mid(dys);
+  }
+  action.statsReady = true;
+}
+
 /** 解码某组的帧像素 (只解这一组; 已缓存则取 imgDataByCell) → SpriteSet。切组复用缓存不重解。 */
 async function decodeSegment(open: OpenSubject, cells: Cell[]): Promise<SpriteSet> {
   const ss = new SpriteSet();
@@ -245,6 +281,7 @@ export async function renderActionSegment(
   const action = open.actions[actionIndex];
   if (!action) throw new Error(`动作越界: ${actionIndex}`);
   await ensureActionPixels(eng, open, action.imgIndex);
+  await ensureActionContentStats(open, action);         // 按真实内容算 targetH/家锚 (覆盖帧图尺寸临时值)
   const cells = action.segments[segIndex] ?? [];
   const ss = await decodeSegment(open, cells);
   const geo = segmentUnionGeo(ss, cells);               // 本组紧贴几何 (角色大 + 组内连贯)

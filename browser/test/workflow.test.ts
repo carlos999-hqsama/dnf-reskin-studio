@@ -3,7 +3,7 @@
 // (Canvas 全链路 render→import→deploy 走 smoke + preview OPFS, 这里只测纯编排元数据。)
 // openSubject 现走 AsyncEngine(Web Worker) → 返回 Promise, 测试 await。
 import { describe, it, expect } from 'vitest';
-import { openSubject } from '../src/workflow';
+import { openSubject, ensureActionContentStats } from '../src/workflow';
 import type { AsyncEngine, DnfManifest, ManifestFrame } from '../src/engine';
 
 function frame(img: number, fi: number, name: string, linked = false): ManifestFrame {
@@ -64,5 +64,25 @@ describe('openSubject (多动作元数据)', () => {
 
   it('非可补丁对象 (地图/界面) → 抛错 (async reject)', async () => {
     await expect(openSubject(mockEng(manifest([])), new Uint8Array(), 'sprite_map_town.NPK')).rejects.toThrow();
+  });
+
+  it('ensureActionContentStats: targetH/家锚按【真实内容】算, 剔除帧图透明边 (修放大根因)', async () => {
+    // 帧图 50×120, 轴(25,90); 但内容只在 [10,20)-(40,100) = 30×80, 四周透明边。
+    const f: ManifestFrame = {
+      img_index: 0, img_name: 'body', frame_index: 0, file: 'f.png',
+      offset_x: 25, offset_y: 90, frame_width: 50, frame_height: 120, pic_width: 50, pic_height: 120,
+      format: 5, compressed: false, linked: false, link_to: -1,
+    };
+    const open = await openSubject(mockEng(manifest([f])), new Uint8Array(), 'sprite_monster_x.NPK');
+    // 注入解码缓存 (跳过 decodePng/Canvas): 50×120 RGBA, 内容矩形 [10,20)-(40,100) alpha=255。
+    const W = 50, H = 120, data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 20; y < 100; y++) for (let x = 10; x < 40; x++) data[(y * W + x) * 4 + 3] = 255;
+    open.imgDataByCell.set('0,0', { data, width: W, height: H } as unknown as ImageData);
+    await ensureActionContentStats(open, open.actions[0]!);
+    const a = open.actions[0]!;
+    expect(a.targetH).toBe(80);   // 内容高 80, 不是帧图高 120 (按帧图算会放大)
+    expect(a.baseDX).toBe(0);     // 轴x25 - 内容水平中心(10+40)/2=25 → 0
+    expect(a.baseDY).toBe(-10);   // 轴y90 - 内容底100 → -10 (按帧图算会是 90-120=-30)
+    expect(a.statsReady).toBe(true);
   });
 });
