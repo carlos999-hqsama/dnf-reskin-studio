@@ -60,6 +60,28 @@ export interface ImportedFrame {
 
 export type ResizeFn = (img: RGBA, w: number, h: number) => RGBA;
 
+/** 抠图/缩放选项 (importActionGrid / importActionGridFrames 共用)。 */
+export interface ImportOpts {
+  bgKey?: readonly [number, number, number];
+  keyTol?: number;
+  resize?: ResizeFn;
+  despill?: boolean;
+  algo?: 'floodkey' | 'floodbg';
+  scaleMult?: number;
+}
+
+/** 一帧的【可编辑中间态】: 抠图+缩放后的纯精灵 + 预对齐轴 relAxis。
+ *  对齐编辑器在此之上逐帧拖 relAxis (帧间连贯) + 组级 groupOffset (整组锚原版); 最终 axis = relAxis + groupOffset
+ *  (见 workflow.commitSegmentEdit)。relAxis 是【单帧画在哪】, groupOffset 是【整组一起平移】— 两层独立互不干扰。 */
+export interface EditFrame {
+  g: number;
+  i: number;
+  /** 抠图+缩放后的纯精灵 (已裁到内容 bbox)。 */
+  sprite: RGBA;
+  /** 预对齐轴 [x,y] (sprite 像素坐标系; = 旧脚底锚定算的 axis, 大部分帧到位)。编辑器逐帧拖动改它。 */
+  relAxis: [number, number];
+}
+
 function cloneRGBA(img: RGBA): RGBA {
   return { data: new Uint8ClampedArray(img.data), width: img.width, height: img.height };
 }
@@ -87,19 +109,21 @@ const canvasResize: ResizeFn = (img, w, h) => {
   return { data: d.data, width: w, height: h };
 };
 
-/** AI 网格图 → {(g,i) → 替换帧}。meta 来自导出 (buildActionGridCanvas)。
+/** AI 网格图 → 每帧【可编辑中间态 EditFrame】(sprite + 预对齐 relAxis)。meta 来自导出 (buildActionGridCanvas)。
+ *  抠图/切格/缩放流程照搬 importer.import_action_grid, 但产出"可编辑中间态"喂对齐编辑器逐帧精调, 而非定死最终帧。
+ *  importActionGrid = 本函数 + (relAxis 当最终 axis) 的薄封装 (向后兼容 dev-harness/verify/reskin-demo/测试)。
  *
  *  流程 (照搬 importer.import_action_grid):
  *  1. (可选) bgKey 色键补刀。
  *  2. 投影法检测列/行边界: 整图 floodKey+despill 后取 alpha → 列/行投影 → splitBounds
  *     (峰段凑不齐 cols×rows 回退等分; 鲁棒于人物在格里偏移/跨格)。
  *  3. 每格: crop → floodKey(per-cell 背景自适应) + despill(中和残绿) → 内容 bbox →
- *     统一缩到角色基准高 meta.targetH(保宽高比) → 轴=内容底部中心 (与原版逐帧/头身比脱钩, 不左右闪)。
+ *     全局本体缩放 + 逐帧脚底锚定(沿用原版 axis) → relAxis (走位/起跳逐帧运动作为初值, 本体比例固定)。
  */
-export function importActionGrid(
+export function importActionGridFrames(
   img: RGBA, meta: ImportMeta,
-  opts: { bgKey?: readonly [number, number, number]; keyTol?: number; resize?: ResizeFn; despill?: boolean; algo?: 'floodkey' | 'floodbg'; scaleMult?: number } = {},
-): Map<string, ImportedFrame> {
+  opts: ImportOpts = {},
+): EditFrame[] {
   const resize = opts.resize ?? canvasResize;
   const keyTol = opts.keyTol ?? 34;
   const IW = img.width, IH = img.height;
@@ -126,7 +150,7 @@ export function importActionGrid(
   const rowB = splitBounds(rowAlphaProfile(det), meta.rows, IH) ?? equalBounds(meta.rows, IH);
 
   const kFallback = (meta.upscale || 1) * (meta.scale || 1);
-  const out = new Map<string, ImportedFrame>();
+  const frames: EditFrame[] = [];
 
   // 第一遍: 逐格 切格→去背→内容 bbox; 同时收集 (原版内容高/新内容高) 比值 → 算全局本体缩放基准。
   interface Det { cell: ImportCell; sprite0: RGBA; nw: number; nh: number; }
@@ -174,7 +198,21 @@ export function importActionGrid(
       sprite = resize(sprite0, ow, oh);
       axis = [Math.round(ow / 2 + (meta.baseDX ?? 0)), Math.round(oh + (meta.baseDY ?? 0))];
     }
-    out.set(`${cell.g},${cell.i}`, { group: cell.g, image: cell.i, img: sprite, axis });
+    frames.push({ g: cell.g, i: cell.i, sprite, relAxis: [axis[0], axis[1]] });
+  }
+  return frames;
+}
+
+/** AI 网格图 → {(g,i) → 替换帧} (最终 axis = relAxis, 即 groupOffset=0)。importActionGridFrames 的薄封装,
+ *  保持旧契约 (dev-harness/verify-opfs/reskin-demo/import.test 用)。带对齐编辑器的流程走
+ *  workflow.buildSegmentEdit + commitSegmentEdit (产出可编辑中间态 → 编辑 → 合成最终 axis)。 */
+export function importActionGrid(
+  img: RGBA, meta: ImportMeta,
+  opts: ImportOpts = {},
+): Map<string, ImportedFrame> {
+  const out = new Map<string, ImportedFrame>();
+  for (const f of importActionGridFrames(img, meta, opts)) {
+    out.set(`${f.g},${f.i}`, { group: f.g, image: f.i, img: f.sprite, axis: f.relAxis });
   }
   return out;
 }

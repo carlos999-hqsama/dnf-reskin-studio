@@ -126,3 +126,31 @@ export function buildActionGridCanvas(
   };
   return { canvas: cv, meta };
 }
+
+/** 洋葱皮叠帧 (对齐编辑器用): 在 ctx 上把一帧按 axis 钉到 anchor 画出 (坐标同 renderCellCanvas: sprite 画在 anchor-axis)。
+ *  alpha<1 = 半透明残影; tint!=null 用 source-atop 给不透明像素染色 (前/后帧/原版用不同色调区分, 不挡当前帧)。
+ *  当前帧 alpha=1 无 tint 实色画在最上, 前后帧/原版半透明垫底 → 拖当前帧到与前后帧衔接连贯。 */
+export function drawGhost(
+  ctx: CanvasRenderingContext2D, img: ImageData, axis: readonly [number, number],
+  anchor: readonly [number, number], scale: number, alpha: number, tint?: string,
+): void {
+  const tmp = document.createElement('canvas');
+  tmp.width = img.width; tmp.height = img.height;
+  tmp.getContext('2d')!.putImageData(img, 0, 0);
+  let src: HTMLCanvasElement = tmp;
+  if (tint) {
+    const t = document.createElement('canvas'); t.width = img.width; t.height = img.height;
+    const tx = t.getContext('2d')!;
+    tx.drawImage(tmp, 0, 0);
+    tx.globalCompositeOperation = 'source-atop'; // 只在不透明像素上铺色 → 染色保留轮廓
+    tx.fillStyle = tint; tx.fillRect(0, 0, img.width, img.height);
+    src = t;
+  }
+  const dw = Math.max(1, Math.round(img.width * scale)), dh = Math.max(1, Math.round(img.height * scale));
+  const dx = Math.round(anchor[0] - axis[0] * scale), dy = Math.round(anchor[1] - axis[1] * scale);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.imageSmoothingEnabled = scale !== 1;
+  ctx.drawImage(src, 0, 0, img.width, img.height, dx, dy, dw, dh);
+  ctx.restore();
+}

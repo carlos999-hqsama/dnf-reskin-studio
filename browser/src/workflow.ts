@@ -7,7 +7,7 @@
 import type { AsyncEngine, DnfManifest } from './engine';
 import { decodePng, encodePng } from './png';
 import { buildActionGridCanvas } from './render-canvas';
-import { importActionGrid, type ImportMeta, type ImportedFrame } from './import';
+import { importActionGrid, importActionGridFrames, type ImportMeta, type ImportedFrame, type EditFrame, type ImportOpts } from './import';
 import { conformToDnf, getBbox } from './pixels';
 import { SpriteSet, type Cell, type Action, type RGBA } from './model';
 import { MARGIN, type Geometry } from './geometry';
@@ -130,6 +130,15 @@ export interface OpenSubject {
   replaced: Map<string, ImportedFrame>;  // "g,i" → 替换帧 (跨动作累积; g=img_index 故不撞)
   gridCols: number; gridRows: number;    // 当前导出网格(3 或 4); 渲染导出图 + 显示网格列数用, setGrid 切换时更新
   bodyScaleMult: number;                 // 用户【本体缩放】倍数 (整个角色统一, 默认 1)。导入时 × 自动基准 → 全局缩放 (见 import)
+  edits: Map<string, SegmentEdit>;       // "action:seg" → 该组对齐编辑中间态 (帧 sprite+relAxis + 组级 groupOffset)。commit 后合成进 replaced
+}
+
+/** 一组的【对齐编辑中间态】: 每帧 sprite+relAxis + 组级 groupOffset。对齐编辑器读写它,
+ *  确认后 commitSegmentEdit 合成 (每帧 axis = relAxis + groupOffset) 写进 open.replaced。
+ *  两层独立: relAxis 逐帧拖(治帧间一跳一跳), groupOffset 整组平移(锚原版, 不逐帧贴 — 原版 axis 抖 200px)。 */
+export interface SegmentEdit {
+  frames: EditFrame[];
+  groupOffset: [number, number];
 }
 
 /** 从 manifest 收一个 IMG 的 size/axis + cells + file 映射 (不解像素, 写进传入的 ss/fileByCell)。 */
@@ -178,7 +187,7 @@ export async function openSubject(eng: AsyncEngine, srcNpk: Uint8Array, fileName
   return {
     type, fileName, zh: subjectZh(fileName, type), srcNpk, manifest, actions,
     metaSS, fileByCell, pngByFile: new Map(), imgDataByCell: new Map(), loadedImgs: new Set(), replaced: new Map(),
-    gridCols: grid.cols, gridRows: grid.rows, bodyScaleMult: 1,
+    gridCols: grid.cols, gridRows: grid.rows, bodyScaleMult: 1, edits: new Map(),
   };
 }
 
@@ -318,6 +327,48 @@ export function importActionSegment(
   const rep = importActionGrid(aiImg, meta, opts);
   for (const [k, v] of rep) open.replaced.set(k, v);
   return rep.size;
+}
+
+/** 抠图产出某组【对齐编辑中间态】(EditFrame[] + groupOffset), 存进 open.edits[key] 供对齐编辑器读写。
+ *  改算法/缩放重抠时 sprite/relAxis 重算, 但保留上次 groupOffset (整组偏移与抠图无关, 不该被重置)。 */
+export function buildSegmentEdit(
+  open: OpenSubject, key: string,
+  aiImg: { data: Uint8ClampedArray; width: number; height: number }, meta: ImportMeta,
+  opts: ImportOpts = {},
+): SegmentEdit {
+  const frames = importActionGridFrames(aiImg, meta, opts);
+  const prev = open.edits.get(key);
+  const edit: SegmentEdit = { frames, groupOffset: prev ? [prev.groupOffset[0], prev.groupOffset[1]] : [0, 0] };
+  open.edits.set(key, edit);
+  return edit;
+}
+
+/** 把对齐编辑中间态合成进 open.replaced: 先清这组旧帧(含 AI 没画的空格), 再每帧 axis = relAxis + groupOffset。
+ *  回封(deploySubject)只认 replaced, 不碰 edits → 编辑器是 replaced 的上游编辑层。 */
+export function commitSegmentEdit(open: OpenSubject, cells: Cell[], edit: SegmentEdit): void {
+  for (const [g, i] of cells) open.replaced.delete(`${g},${i}`);
+  const [gx, gy] = edit.groupOffset;
+  for (const f of edit.frames) {
+    open.replaced.set(`${f.g},${f.i}`, {
+      group: f.g, image: f.i, img: f.sprite,
+      axis: [Math.round(f.relAxis[0] + gx), Math.round(f.relAxis[1] + gy)],
+    });
+  }
+}
+
+/** "一键对齐原版"的整组偏移: 新帧组锚点中位 − 原版组锚点中位 → 整组平移使世界锚点中位对齐原版。
+ *  ⚠️整组锚, 绝不逐帧贴 (原版 axis 逐帧抖 200px, 逐帧贴会被带得一跳一跳)。原版 axis 来自 meta.cells[].srcAxis。
+ *  应用后 median(relAxis + offset) = median(srcAxis)。脚底锚定已逐帧对齐 → 此值通常小, 主要给手动微调一个起点。 */
+export function autoGroupOffset(edit: SegmentEdit, meta: ImportMeta): [number, number] {
+  const srcByCell = new Map(meta.cells.map((c) => [`${c.g},${c.i}`, c.srcAxis]));
+  const oxs: number[] = [], oys: number[] = [], nxs: number[] = [], nys: number[] = [];
+  for (const f of edit.frames) {
+    const src = srcByCell.get(`${f.g},${f.i}`);
+    if (!src) continue;
+    oxs.push(src[0]); oys.push(src[1]); nxs.push(f.relAxis[0]); nys.push(f.relAxis[1]);
+  }
+  if (!oxs.length) return [0, 0];
+  return [Math.round(mid(oxs) - mid(nxs)), Math.round(mid(oys) - mid(nys))];
 }
 
 /** 回封: 累积替换帧硬边化+编码 → 按类型展开 (class 铺骨架变体 / monster·pet 各动作独立) → repack → 补丁 NPK。 */

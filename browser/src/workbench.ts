@@ -10,9 +10,10 @@ import type { ImportMeta } from './import';
 import { SpriteSet, type Cell, type RGBA } from './model';
 import type { Geometry } from './geometry';
 import {
-  openSubject, setGrid, renderActionSegment, importActionSegment, deploySubject, groundedGeo, motionGeo,
+  openSubject, setGrid, renderActionSegment, buildSegmentEdit, commitSegmentEdit, deploySubject, groundedGeo, motionGeo,
   listSkins, listHideSources, filterSubjects, type OpenSubject, type SubjectEntry, type GridSpec,
 } from './workflow';
+import { openAlignEditor } from './align-editor';
 import { parseSkin, hidePatchName, type SubjectType } from './dnf-rules';
 import { readNpk, writePatch, pickImagePacksDir, listFileNames, type FsaDirHandle } from './fs-access';
 
@@ -199,11 +200,16 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
   function reimportCurrent(): void {
     if (!open || !cur) return;
     const key = segKey();
-    for (const [g, i] of cur.cells) open.replaced.delete(`${g},${i}`); // 先清这组旧帧再重抠
     const raw = rawAiByKey.get(key);
-    if (!raw) { importedKeys.delete(key); return; }
-    const n = importActionSegment(open, raw, cur.meta, { algo, despill, scaleMult: open.bodyScaleMult });
-    if (n > 0) importedKeys.add(key); else importedKeys.delete(key);
+    if (!raw) {                                         // 没上传图: 清这组 edit + 旧帧
+      open.edits.delete(key);
+      for (const [g, i] of cur.cells) open.replaced.delete(`${g},${i}`);
+      importedKeys.delete(key); return;
+    }
+    // 抠图产出对齐中间态(保留已有 groupOffset) → 合成进 replaced。逐帧 relAxis 重置为预对齐 (改算法=重抠, 拖动作废)。
+    const edit = buildSegmentEdit(open, key, raw, cur.meta, { algo, despill, scaleMult: open.bodyScaleMult });
+    commitSegmentEdit(open, cur.cells, edit);
+    if (edit.frames.length > 0) importedKeys.add(key); else importedKeys.delete(key);
   }
 
   // 改【本体缩放】后, 把所有已上传重绘图的组按新缩放全部重对齐 (本体缩放是全局的, 不能只改当前组)。
@@ -214,9 +220,9 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
     for (const [key, raw] of rawAiByKey) {
       const [aStr, sStr] = key.split(':');
       const r = await renderActionSegment(eng, o, +aStr!, +sStr!, EXPORT_BG);
-      for (const [g, i] of r.cells) o.replaced.delete(`${g},${i}`);
-      const n = importActionSegment(o, raw, r.meta, { algo, despill, scaleMult: o.bodyScaleMult });
-      if (n > 0) importedKeys.add(key); else importedKeys.delete(key);
+      const edit = buildSegmentEdit(o, key, raw, r.meta, { algo, despill, scaleMult: o.bodyScaleMult });
+      commitSegmentEdit(o, r.cells, edit);
+      if (edit.frames.length > 0) importedKeys.add(key); else importedKeys.delete(key);
     }
   }
 
@@ -245,8 +251,28 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
     ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, 0, 0, cw, ch); bmp.close();
     const id = ctx.getImageData(0, 0, cw, ch);
     rawAiByKey.set(segKey(), { data: id.data, width: id.width, height: id.height });
-    reimportCurrent();
+    reimportCurrent();          // 抠图 + 预对齐即时显示
     pgHide(headPg);
+    await renderBoth();
+    await editCurrent();        // 进对齐编辑器逐帧精调 (取消则保留预对齐)
+  }
+
+  // 打开对齐编辑器精调当前组 (上传后自动进 / 点"编辑对齐"重进)。确认 → 更新 edit + 合成; 取消 → 保留预对齐 (已 commit)。
+  async function editCurrent(): Promise<void> {
+    if (!open || !cur) return;
+    const key = segKey();
+    const edit = open.edits.get(key);
+    if (!edit) return;
+    const o = open, c = cur;
+    const aName = o.actions[curAction]?.name ?? '';
+    const result = await openAlignEditor({
+      edit, cells: c.cells, origSS: c.ss, meta: c.meta, bg: rightBg.css,
+      title: `${o.zh} · ${aName} · 第 ${curSeg + 1} 组`,
+    });
+    if (!result) return;                                // 取消: 保留预对齐 (已 commit)
+    o.edits.set(key, result);
+    commitSegmentEdit(o, c.cells, result);
+    importedKeys.add(key);
     await renderBoth();
   }
 
@@ -479,6 +505,11 @@ export function mountWorkbench(getEngine: () => Promise<AsyncEngine>, els: Workb
 
       side.appendChild(buildAlgo());
       side.appendChild(buildScale());
+      if (importedKeys.has(segKey())) {                 // 已导入该组 → 可重开对齐编辑器逐帧精调
+        const edBtn = el('button', 'btn block', '编辑对齐 · 逐帧精调');
+        edBtn.addEventListener('click', () => void editCurrent());
+        side.appendChild(edBtn);
+      }
 
       if (subjType === 'class') {                       // 隐藏时装仅职业有意义 (怪物/宠物无装备槽)
         const hide = el('button', 'btn block', '隐藏装备·露出本体');

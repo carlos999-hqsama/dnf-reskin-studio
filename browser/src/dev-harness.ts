@@ -7,8 +7,9 @@ import { SpriteSet, type Cell, type RGBA } from './model';
 import { computeGeometry } from './geometry';
 import { coreSourceImg } from './dnf-rules';
 import { getBbox, footCenterX } from './pixels';
-import { openSubject, renderActionSegment, motionGeo, type OpenSubject } from './workflow';
+import { openSubject, renderActionSegment, motionGeo, buildSegmentEdit, type OpenSubject } from './workflow';
 import { importActionGrid } from './import';
+import { openAlignEditor } from './align-editor';
 import { runReskinLoop } from './reskin-demo';
 import { verifyWithOpfs, verifySubjectWithOpfs } from './verify-opfs';
 import type { WorkbenchHandle } from './workbench';
@@ -237,6 +238,33 @@ export function installDevHarness(getEngine: () => Promise<AsyncEngine>, wb: Wor
     const summary = { seg: segIdx + 1, mode, frames: present.length, missing: rows.length - present.length, dxAbsMax: absMax('dx'), dyAbsMax: absMax('dy'), worst };
     (window as unknown as Record<string, unknown>).__LOOP_ID = { summary, rows };
     return summary;
+  };
+
+  // ── 对齐编辑器真机验证 (dev-only): 用真格斗家某组 identity 回环 (导出图喂回) 打开对齐编辑器 ──
+  // 验编辑器组件: 帧平铺/主画布渲染/洋葱皮/拖拽/双循环预览/确认。identity 不复现"飘", 但 UI/几何/交互全可验。
+  // 确认 → window.__EDIT_RESULT = {frames, groupOffset}; 取消 → null。真重绘图的飘修复留三九拿真图走 UI 验收。
+  w.__editFighterSeg = async (segIdx = 0) => {
+    const eng = await getEngine();
+    if (!fighterOpen) fighterOpen = await openSubject(eng, await fetchBytes('/fighter.NPK'), 'sprite_character_fighter_equipment_avatar_skin.NPK');
+    const open = fighterOpen;
+    const r = await renderActionSegment(eng, open, 0, segIdx, '#00ff00');
+    const id = r.canvas.getContext('2d')!.getImageData(0, 0, r.canvas.width, r.canvas.height);
+    const edit = buildSegmentEdit(open, `0:${segIdx}`, { data: id.data, width: id.width, height: id.height }, r.meta, { algo: 'floodkey', despill: true });
+    const result = await openAlignEditor({ edit, cells: r.cells, origSS: r.ss, meta: r.meta, bg: '#8a8d93', title: `格斗家 · 第${segIdx + 1}组 (identity 回环验证)` });
+    const summary = result ? { frames: result.frames.length, groupOffset: result.groupOffset } : null;
+    (window as unknown as Record<string, unknown>).__EDIT_RESULT = summary;
+    return summary;
+  };
+
+  // dev-only: 用真格斗家某组导出图生成 PNG File 存 window.__aiFile, 供 eval 注入右栏 dropzone 验完整 UI 流程
+  // (上传→预对齐→自动进编辑器→确认→右栏成品更新→打包)。identity 回环 (导出图喂回), 验集成串接, 非真重绘效果。
+  w.__makeAiFile = async (segIdx = 0) => {
+    const eng = await getEngine();
+    if (!fighterOpen) fighterOpen = await openSubject(eng, await fetchBytes('/fighter.NPK'), 'sprite_character_fighter_equipment_avatar_skin.NPK');
+    const r = await renderActionSegment(eng, fighterOpen, 0, segIdx, '#00ff00');
+    const blob = await new Promise<Blob | null>((res) => r.canvas.toBlob(res, 'image/png'));
+    (window as unknown as Record<string, unknown>).__aiFile = new File([blob as Blob], 'ai.png', { type: 'image/png' });
+    return blob ? 'ok' : 'no-blob';
   };
 
   // OPFS 写【只格斗家】当目录, 驱动真 UI (用真·格斗家走完整 导出→导入→打包 链路验证对齐)。
