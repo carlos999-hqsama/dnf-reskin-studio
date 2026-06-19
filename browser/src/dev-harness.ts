@@ -188,6 +188,57 @@ export function installDevHarness(getEngine: () => Promise<AsyncEngine>, wb: Wor
     return summary;
   };
 
+  // ── 回环对齐诊断 (dev-only, 无需外部重绘图) ──────────────────────────────────────
+  // 把导出图原样喂回 import (identity) 或 在脚底带染稀疏红噪点 (perturb, 模拟 AI 重绘脚底形变/抠图残留),
+  // 逐帧量 [成品 脚底中心x / 内容底 相对轴] − [原版同量] = dx/dy。identity 应全≈0 (测往返管线干不干净);
+  // perturb 若个别帧 dx/dy 暴增 = footCenterX(横向)/getBbox(纵向) 对形变敏感 → 复现"个别帧飘"的机制。
+  w.__loopId = async (segIdx = 0, mode = 'identity', scaleMult = 1) => {
+    const eng = await getEngine();
+    if (!fighterOpen) fighterOpen = await openSubject(eng, await fetchBytes('/fighter.NPK'), 'sprite_character_fighter_equipment_avatar_skin.NPK');
+    const open = fighterOpen;
+    const r = await renderActionSegment(eng, open, 0, segIdx, '#00ff00');
+    let id = r.canvas.getContext('2d')!.getImageData(0, 0, r.canvas.width, r.canvas.height);
+    if (mode === 'jpeg') {
+      // 真实流程: AI 出的图是 JPEG (绿底+角色边缘有压缩伪影)。导出 canvas → JPEG → 解回 → 喂导入,
+      // 复现"抠图边缘逐帧抖动 → bbox/footCenterX 抖"。
+      const url = r.canvas.toDataURL('image/jpeg', 0.85);
+      const im = new Image(); im.src = url; await im.decode();
+      const c = document.createElement('canvas'); c.width = r.canvas.width; c.height = r.canvas.height;
+      c.getContext('2d')!.drawImage(im, 0, 0);
+      id = c.getContext('2d')!.getImageData(0, 0, c.width, c.height);
+    } else if (mode === 'perturb') {
+      const d = id.data, W = id.width, H = id.height;
+      const isG = (p: number): boolean => d[p + 1]! > 180 && d[p]! < 90 && d[p + 2]! < 90;
+      // 角色像素正下方 1-4px 的绿底, 按确定性图案染红 = 模拟 AI 把脚底/影子多画一点 + 抠图残留 (非绿→不被去背)。
+      for (let y = 1; y < H; y++) for (let x = 0; x < W; x++) {
+        const p = (y * W + x) * 4;
+        if (!isG(p)) continue;
+        let nearChar = false;
+        for (let k = 1; k <= 4 && y - k >= 0; k++) if (!isG(((y - k) * W + x) * 4)) { nearChar = true; break; }
+        if (nearChar && ((x * 7 + y * 13) % 11 === 0)) { d[p] = 200; d[p + 1] = 30; d[p + 2] = 30; d[p + 3] = 255; }
+      }
+    }
+    const rep = importActionGrid({ data: id.data, width: id.width, height: id.height }, r.meta, { algo: 'floodkey', despill: false, scaleMult });
+    const rows: { gi: string; dx?: number; dy?: number; missing?: boolean }[] = [];
+    for (const [g, i] of r.cells) {
+      const o = r.ss.get(g, i); if (!o?.img) continue;
+      const ob = getBbox(o.img as unknown as RGBA); if (!ob) continue;
+      const oFx = Math.round(footCenterX(o.img as unknown as RGBA, ob) - o.axis[0]);
+      const oFy = ob[3] - o.axis[1];
+      const f = rep.get(`${g},${i}`);
+      if (!f) { rows.push({ gi: `${g},${i}`, missing: true }); continue; }
+      const fFx = Math.round(footCenterX(f.img, [0, 0, f.img.width, f.img.height]) - f.axis[0]);
+      const fFy = f.img.height - f.axis[1];
+      rows.push({ gi: `${g},${i}`, dx: fFx - oFx, dy: fFy - oFy });
+    }
+    const present = rows.filter((rr): rr is { gi: string; dx: number; dy: number } => !rr.missing);
+    const absMax = (k: 'dx' | 'dy'): number => present.reduce((m, rr) => Math.max(m, Math.abs(rr[k])), 0);
+    const worst = present.slice().sort((a, b) => (Math.abs(b.dx) + Math.abs(b.dy)) - (Math.abs(a.dx) + Math.abs(a.dy))).slice(0, 8);
+    const summary = { seg: segIdx + 1, mode, frames: present.length, missing: rows.length - present.length, dxAbsMax: absMax('dx'), dyAbsMax: absMax('dy'), worst };
+    (window as unknown as Record<string, unknown>).__LOOP_ID = { summary, rows };
+    return summary;
+  };
+
   // OPFS 写【只格斗家】当目录, 驱动真 UI (用真·格斗家走完整 导出→导入→打包 链路验证对齐)。
   w.__wbFighter = async () => {
     const root = await (navigator as unknown as { storage: { getDirectory(): Promise<FsaDirHandle> } }).storage.getDirectory();
